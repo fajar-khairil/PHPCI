@@ -45,8 +45,11 @@ class Composer implements \PHPCI\Plugin
             $this->phpci->logFailure('Could not find Composer.');
             return false;
         }
-
-        $cmd = $composerLocation . ' --no-ansi --no-interaction ';
+        $cmd = '';
+        if (IS_WIN) {
+            $cmd = 'php ';
+        }
+        $cmd .= $composerLocation . ' --no-ansi --no-interaction ';
         $cmd .= ($this->preferDist ? '--prefer-dist' : null) . ' --working-dir="%s" %s';
 
         return $this->phpci->executeCommand($cmd, $this->directory, $this->action);
