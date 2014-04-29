@@ -61,6 +61,8 @@ class ProjectController extends \PHPCI\Controller
         $this->view->project  = $project;
         $this->view->page     = $page;
 
+        $this->config->set('page_title', $project->getTitle());
+
         return $this->view->render();
     }
 
@@ -78,6 +80,7 @@ class ProjectController extends \PHPCI\Controller
         $build->setStatus(Build::STATUS_NEW);
         $build->setBranch($project->getType() === 'hg' ? 'default' : 'master');
         $build->setCreated(new \DateTime());
+        $build->setCommitterEmail($_SESSION['user']->getEmail());
 
         $build = $this->buildStore->save($build);
 
@@ -134,6 +137,8 @@ class ProjectController extends \PHPCI\Controller
     */
     public function add()
     {
+        $this->config->set('page_title', 'Add Project');
+
         if (!$_SESSION['user']->getIsAdmin()) {
             throw new \Exception('You do not have permission to do that.');
         }
@@ -160,12 +165,17 @@ class ProjectController extends \PHPCI\Controller
                 mkdir($tempPath);
             }
 
-            shell_exec('ssh-keygen -q -t rsa -b 2048 -f '.$keyFile.' -N "" -C "deploy@phpci"');
+            if ($this->canGenerateKeys()) {
+                shell_exec('ssh-keygen -q -t rsa -b 2048 -f '.$keyFile.' -N "" -C "deploy@phpci"');
 
-            $pub = file_get_contents($keyFile . '.pub');
-            $prv = file_get_contents($keyFile);
+                $pub = file_get_contents($keyFile . '.pub');
+                $prv = file_get_contents($keyFile);
 
-            $values = array('key' => $prv, 'pubkey' => $pub);
+                $values = array('key' => $prv, 'pubkey' => $pub);
+            } else {
+                $pub = null;
+                $values = array();
+            }
         }
 
         $form = $this->projectForm($values);
@@ -184,11 +194,21 @@ class ProjectController extends \PHPCI\Controller
 
         if ($values['type'] == "gitlab") {
             preg_match('`^(.*)@(.*):(.*)/(.*)\.git`', $values['reference'], $matches);
+
             $info = array();
-            $info["user"] = $matches[1];
-            $info["domain"] = $matches[2];
+            if (isset($matches[1])) {
+                $info["user"] = $matches[1];
+            }
+
+            if (isset($matches[2])) {
+                $info["domain"] = $matches[2];
+            }
+
             $values['access_information'] = serialize($info);
-            $values['reference'] = $matches[3]."/".$matches[4];
+
+            if (isset($matches[3]) && isset($matches[4])) {
+                $values['reference'] = $matches[3]."/".$matches[4];
+            }
         }
 
         $values['git_key']  = $values['key'];
@@ -213,6 +233,9 @@ class ProjectController extends \PHPCI\Controller
 
         $method     = $this->request->getMethod();
         $project    = $this->projectStore->getById($projectId);
+
+        $this->config->set('page_title', 'Edit: ' . $project->getTitle());
+
 
         if ($method == 'POST') {
             $values = $this->getParams();
@@ -323,6 +346,14 @@ class ProjectController extends \PHPCI\Controller
         $field->setRows(6);
         $form->addField($field);
 
+        $field = new Form\Element\TextArea('build_config');
+        $field->setRequired(false);
+        $field->setLabel('PHPCI build config for this project (if you cannot add a phpci.yml file in the project repository)');
+        $field->setClass('form-control');
+        $field->setContainerClass('form-group');
+        $field->setRows(6);
+        $form->addField($field);
+
         $field = new Form\Element\Submit();
         $field->setValue('Save Project');
         $field->setContainerClass('form-group');
@@ -416,5 +447,11 @@ class ProjectController extends \PHPCI\Controller
 
             return true;
         };
+    }
+
+    protected function canGenerateKeys()
+    {
+        $result = @shell_exec('ssh-keygen');
+        return !empty($result);
     }
 }

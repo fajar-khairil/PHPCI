@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 	<head>
-		<title>PHPCI</title>
+		<title><?php if (!empty($title)) { print $title . ' - '; } ?>PHPCI</title>
 
 		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -64,14 +64,6 @@
 		</div>
 
 		<div id="content" class="container">
-
-            <?php if (file_exists(PHPCI_DIR . 'public/install.php')): ?>
-            <div class="alert alert-danger alert-dismissable">
-                <button type="button" class="close" data-dismiss="alert" aria-hidden="true">&times;</button>
-                <strong>Warning!</strong> install.php detected, for security purposes please delete it immediately.
-            </div>
-            <?php endif; ?>
-
 			<?php print $content; ?>
 		</div>
 

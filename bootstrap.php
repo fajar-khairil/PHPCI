@@ -8,7 +8,13 @@
 */
 
 // Let PHP take a guess as to the default timezone, if the user hasn't set one:
-date_default_timezone_set(@date_default_timezone_get());
+use PHPCI\Logging\Handler;
+use PHPCI\Logging\LoggerConfig;
+
+$timezone = ini_get('date.timezone');
+if (empty($timezone)) {
+    date_default_timezone_set('UTC');
+}
 
 // Set up a basic autoloader for PHPCI:
 $autoload = function ($class) {
@@ -27,9 +33,8 @@ $autoload = function ($class) {
 
 spl_autoload_register($autoload, true, true);
 
-if (!file_exists(dirname(__FILE__) . '/PHPCI/config.yml') && (!defined('PHPCI_IS_CONSOLE') || !PHPCI_IS_CONSOLE) && substr($_SERVER['PHP_SELF'], -12) != '/install.php') {
-    header('Location: install.php');
-    die;
+if (!file_exists(dirname(__FILE__) . '/PHPCI/config.yml') && (!defined('PHPCI_IS_CONSOLE') || !PHPCI_IS_CONSOLE)) {
+    die('PHPCI has not yet been installed - Please use the command ./console phpci:install to install it.');
 }
 
 if (!file_exists(dirname(__FILE__) . '/vendor/autoload.php') && defined('PHPCI_IS_CONSOLE') && PHPCI_IS_CONSOLE) {
@@ -37,9 +42,11 @@ if (!file_exists(dirname(__FILE__) . '/vendor/autoload.php') && defined('PHPCI_I
     exit(1);
 }
 
-
 // Load Composer autoloader:
 require_once(dirname(__FILE__) . '/vendor/autoload.php');
+
+$loggerConfig = LoggerConfig::newFromFile(__DIR__ . "/loggerconfig.php");
+Handler::register($loggerConfig->getFor('_'));
 
 // Load configuration if present:
 $conf = array();
