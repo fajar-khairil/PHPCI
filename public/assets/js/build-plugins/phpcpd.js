@@ -1,16 +1,16 @@
-var phpcsPlugin = PHPCI.UiPlugin.extend({
-    id: 'build-phpcs',
+var phpcpdPlugin = PHPCI.UiPlugin.extend({
+    id: 'build-phpcpd',
     css: 'col-lg-12 col-md-12 col-sm-12 col-xs-12',
-    title: 'PHP Code Sniffer',
+    title: 'PHP Copy/Paste Detector',
     lastData: null,
     box: true,
     rendered: false,
 
     register: function() {
         var self = this;
-        var query = PHPCI.registerQuery('phpcs-data', -1, {key: 'phpcs-data'})
+        var query = PHPCI.registerQuery('phpcpd-data', -1, {key: 'phpcpd-data'})
 
-        $(window).on('phpcs-data', function(data) {
+        $(window).on('phpcpd-data', function(data) {
             self.onUpdate(data);
         });
 
@@ -22,14 +22,16 @@ var phpcsPlugin = PHPCI.UiPlugin.extend({
     },
 
     render: function() {
-        return $('<table class="table table-striped" id="phpcs-data">' +
+
+        return $('<table class="table table-striped" id="phpcpd-data">' +
             '<thead>' +
             '<tr>' +
             '   <th>File</th>' +
-            '   <th>Line</th>' +
-            '   <th>Message</th>' +
+            '   <th>Start</th>' +
+            '   <th>End</th>' +
             '</tr>' +
             '</thead><tbody></tbody></table>');
+
     },
 
     onUpdate: function(e) {
@@ -41,31 +43,39 @@ var phpcsPlugin = PHPCI.UiPlugin.extend({
         this.lastData = e.queryData;
 
         var errors = this.lastData[0].meta_value;
-        var tbody = $('#phpcs-data tbody');
+        var tbody = $('#phpcpd-data tbody');
         tbody.empty();
 
+        var rowClass = 'danger';
         for (var i in errors) {
             var file = errors[i].file;
 
             if (PHPCI.fileLinkTemplate) {
                 var fileLink = PHPCI.fileLinkTemplate.replace('{FILE}', file);
-                fileLink = fileLink.replace('{LINE}', errors[i].line);
+                fileLink = fileLink.replace('{LINE}', errors[i].line_start);
 
                 file = '<a target="_blank" href="'+fileLink+'">' + file + '</a>';
             }
 
-            var row = $('<tr>' +
-                '<td>'+file+'</td>' +
-                '<td>'+errors[i].line+'</td>' +
-                '<td>'+errors[i].message+'</td></tr>');
+            var label = 'From';
 
-            if (errors[i].type == 'ERROR') {
-                row.addClass('danger');
+            if (i % 2 > 0) {
+                label = 'To';
             }
+            else {
+                rowClass = (rowClass == 'warning' ? 'danger' : 'warning');
+            }
+
+            var row = $('<tr>' +
+                '<td><strong>' + label + '</strong>: '+file+'</td>' +
+                '<td>'+errors[i].line_start+'</td>' +
+                '<td>'+errors[i].line_end+'</td></tr>');
+
+            row.addClass(rowClass);
 
             tbody.append(row);
         }
     }
 });
 
-PHPCI.registerPlugin(new phpcsPlugin());
+PHPCI.registerPlugin(new phpcpdPlugin());

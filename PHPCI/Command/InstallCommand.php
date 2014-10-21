@@ -12,6 +12,7 @@ namespace PHPCI\Command;
 use Exception;
 use PDO;
 
+use b8\Config;
 use b8\Database;
 use b8\Store\Factory;
 use Symfony\Component\Console\Command\Command;
@@ -20,7 +21,7 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Helper\DialogHelper;
-use PHPCI\Model\User;
+use PHPCI\Service\UserService;
 
 
 /**
@@ -89,13 +90,13 @@ class InstallCommand extends Command
         $conf['b8']['database'] = $db;
         $conf['phpci']['url'] = $dialog->askAndValidate(
             $output,
-            'Your PHPCI URL (without trailing slash): ',
+            'Your PHPCI URL ("http://phpci.local" for example): ',
             function ($answer) {
                 if (!filter_var($answer, FILTER_VALIDATE_URL)) {
                     throw new Exception('Must be a valid URL');
                 }
 
-                return $answer;
+                return rtrim($answer, '/');
             },
             false
         );
@@ -107,8 +108,10 @@ class InstallCommand extends Command
 
     /**
      * Check PHP version, required modules and for disabled functions.
-     * @param OutputInterface $output
+     * @param  OutputInterface $output
+     * @throws \Exception
      */
+
     protected function checkRequirements(OutputInterface $output)
     {
         $output->write('Checking requirements...');
@@ -159,8 +162,8 @@ class InstallCommand extends Command
 
     /**
      * Try and connect to MySQL using the details provided.
-     * @param array $db
-     * @param OutputInterface $output
+     * @param  array           $db
+     * @param  OutputInterface $output
      * @return bool
      */
     protected function verifyDatabaseDetails(array $db, OutputInterface $output)
@@ -209,6 +212,10 @@ class InstallCommand extends Command
         $output->writeln('<info>OK</info>');
     }
 
+    /**
+     * @param OutputInterface $output
+     * @param DialogHelper    $dialog
+     */
     protected function createAdminUser(OutputInterface $output, DialogHelper $dialog)
     {
         // Try to create a user account:
@@ -229,14 +236,11 @@ class InstallCommand extends Command
         $adminName = $dialog->ask($output, 'Enter your name: ');
 
         try {
-            $user = new User();
-            $user->setEmail($adminEmail);
-            $user->setName($adminName);
-            $user->setIsAdmin(1);
-            $user->setHash(password_hash($adminPass, PASSWORD_DEFAULT));
+            $this->reloadConfig();
 
-            $store = Factory::getStore('User');
-            $store->save($user);
+            $userStore = Factory::getStore('User');
+            $userService = new UserService($userStore);
+            $userService->createUser($adminName, $adminEmail, $adminPass, 1);
 
             $output->writeln('<info>User account created!</info>');
         } catch (\Exception $ex) {
@@ -246,6 +250,19 @@ class InstallCommand extends Command
         }
     }
 
+    protected function reloadConfig()
+    {
+        $configFile = PHPCI_DIR . 'PHPCI/config.yml';
+        $config     = Config::getInstance();
+
+        if (file_exists($configFile)) {
+            $config->loadYaml($configFile);
+        }
+    }
+
+    /**
+     * @param OutputInterface $output
+     */
     protected function verifyNotInstalled(OutputInterface $output)
     {
         if (file_exists(PHPCI_DIR . 'PHPCI/config.yml')) {

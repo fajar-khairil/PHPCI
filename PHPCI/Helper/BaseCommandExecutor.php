@@ -10,6 +10,7 @@
 namespace PHPCI\Helper;
 
 use \PHPCI\Logging\BuildLogger;
+use Psr\Log\LogLevel;
 
 abstract class BaseCommandExecutor implements CommandExecutor
 {
@@ -29,15 +30,21 @@ abstract class BaseCommandExecutor implements CommandExecutor
     protected $verbose;
 
     protected $lastOutput;
+    protected $lastError;
 
     public $logExecOutput = true;
-
 
     /**
      * The path which findBinary will look in.
      * @var string
      */
     protected $rootDir;
+
+    /**
+     * Current build path
+     * @var string
+     */
+    protected $buildPath;
 
     /**
      * @param BuildLogger $logger
@@ -72,14 +79,38 @@ abstract class BaseCommandExecutor implements CommandExecutor
         }
 
         $status = 0;
-        exec($command, $this->lastOutput, $status);
+        $descriptorSpec = array(
+            0 => array("pipe", "r"),  // stdin
+            1 => array("pipe", "w"),  // stdout
+            2 => array("pipe", "w"),  // stderr
+        );
 
-        foreach ($this->lastOutput as &$lastOutput) {
-            $lastOutput = trim($lastOutput, '"');
+        $pipes = array();
+
+        $process = proc_open($command, $descriptorSpec, $pipes, dirname($this->buildPath), null);
+
+        if (is_resource($process)) {
+            fclose($pipes[0]);
+
+            $this->lastOutput = stream_get_contents($pipes[1]);
+            $this->lastError = stream_get_contents($pipes[2]);
+
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+
+            $status = proc_close($process);
         }
 
-        if ($this->logExecOutput && !empty($this->lastOutput) && ($this->verbose|| $status != 0)) {
+        $this->lastOutput = array_filter(explode(PHP_EOL, $this->lastOutput));
+
+        $shouldOutput = ($this->logExecOutput && ($this->verbose || $status != 0));
+
+        if ($shouldOutput && !empty($this->lastOutput)) {
             $this->logger->log($this->lastOutput);
+        }
+
+        if (!empty($this->lastError)) {
+            $this->logger->log("\033[0;31m" . $this->lastError . "\033[0m", LogLevel::ERROR);
         }
 
         $rtn = false;
@@ -100,9 +131,86 @@ abstract class BaseCommandExecutor implements CommandExecutor
     }
 
     /**
+     * Returns the stderr output from the last command run.
+     */
+    public function getLastError()
+    {
+        return $this->lastError;
+    }
+
+    /**
      * Find a binary required by a plugin.
+     * @param string $binary
+     * @param null $buildPath
+     * @return null|string
+     */
+    public function findBinary($binary, $buildPath = null)
+    {
+        $binaryPath = null;
+        $composerBin = $this->getComposerBinDir(realpath($buildPath));
+
+        if (is_string($binary)) {
+            $binary = array($binary);
+        }
+
+        foreach ($binary as $bin) {
+            $this->logger->log("Looking for binary: " . $bin, LogLevel::DEBUG);
+
+            if (is_dir($composerBin) && is_file($composerBin.'/'.$bin)) {
+                $this->logger->log("Found in ".$composerBin.": " . $bin, LogLevel::DEBUG);
+                $binaryPath = $composerBin . '/' . $bin;
+                break;
+            }
+
+            if (is_file($this->rootDir . $bin)) {
+                $this->logger->log("Found in root: " . $bin, LogLevel::DEBUG);
+                $binaryPath = $this->rootDir . $bin;
+                break;
+            }
+
+            if (is_file($this->rootDir . 'vendor/bin/' . $bin)) {
+                $this->logger->log("Found in vendor/bin: " . $bin, LogLevel::DEBUG);
+                $binaryPath = $this->rootDir . 'vendor/bin/' . $bin;
+                break;
+            }
+
+            $findCmdResult = $this->findGlobalBinary($bin);
+            if (is_file($findCmdResult)) {
+                $this->logger->log("Found in " . $findCmdResult, LogLevel::DEBUG);
+                $binaryPath = $findCmdResult;
+                break;
+            }
+        }
+        return $binaryPath;
+    }
+
+    /**
+     * Find a binary which is installed globally on the system
      * @param string $binary
      * @return null|string
      */
-    abstract public function findBinary($binary);
+    abstract protected function findGlobalBinary($binary);
+
+    /**
+     * Try to load the composer.json file in the building project
+     * If the bin-dir is configured, return the full path to it
+     * @param string $path Current build path
+     * @return string|null
+     */
+    public function getComposerBinDir($path)
+    {
+        if (is_dir($path)) {
+            $composer = $path.'/composer.json';
+            if (is_file($composer)) {
+                $json = json_decode(file_get_contents($composer));
+
+                if (isset($json->config->{"bin-dir"})) {
+                    return $path.'/'.$json->config->{"bin-dir"};
+                } elseif (is_dir($path . '/vendor/bin')) {
+                    return $path  . '/vendor/bin';
+                }
+            }
+        }
+        return null;
+    }
 }

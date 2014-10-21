@@ -20,6 +20,8 @@ use PHPCI\Helper\Github;
 use PHPCI\Helper\SshKey;
 use PHPCI\Model\Build;
 use PHPCI\Model\Project;
+use PHPCI\Service\BuildService;
+use PHPCI\Service\ProjectService;
 
 /**
 * Project Controller - Allows users to create, edit and view projects.
@@ -30,25 +32,37 @@ use PHPCI\Model\Project;
 class ProjectController extends \PHPCI\Controller
 {
     /**
+     * @var \PHPCI\Store\ProjectStore
+     */
+    protected $projectStore;
+
+    /**
+     * @var \PHPCI\Service\ProjectService
+     */
+    protected $projectService;
+
+    /**
      * @var \PHPCI\Store\BuildStore
      */
     protected $buildStore;
 
     /**
-     * @var \PHPCI\Store\ProjectStore
+     * @var \PHPCI\Service\BuildService
      */
-    protected $projectStore;
+    protected $buildService;
 
     public function init()
     {
         $this->buildStore = Store\Factory::getStore('Build');
         $this->projectStore = Store\Factory::getStore('Project');
+        $this->projectService = new ProjectService($this->projectStore);
+        $this->buildService = new BuildService($this->buildStore);
     }
 
     /**
     * View a specific project.
     */
-    public function view($projectId)
+    public function view($projectId, $branch = '')
     {
         $project = $this->projectStore->getById($projectId);
 
@@ -56,13 +70,22 @@ class ProjectController extends \PHPCI\Controller
             throw new NotFoundException('Project with id: ' . $projectId . ' not found');
         }
 
-        $page = $this->getParam('p', 1);
-        $builds = $this->getLatestBuildsHtml($projectId, (($page - 1) * 10));
+        $per_page = 10;
+        $page     = $this->getParam('p', 1);
+        $builds   = $this->getLatestBuildsHtml($projectId, urldecode($branch), (($page - 1) * $per_page));
+        $pages    = $builds[1] == 0 ? 1 : ceil($builds[1] / $per_page);
 
-        $this->view->builds = $builds[0];
-        $this->view->total = $builds[1];
-        $this->view->project = $project;
-        $this->view->page = $page;
+        if ($page > $pages) {
+            throw new NotFoundException('Page with number: ' . $page . ' not found');
+        }
+
+        $this->view->builds   = $builds[0];
+        $this->view->total    = $builds[1];
+        $this->view->project  = $project;
+        $this->view->branch = urldecode($branch);
+        $this->view->branches = $this->projectStore->getKnownBranches($projectId);
+        $this->view->page     = $page;
+        $this->view->pages    = $pages;
 
         $this->config->set('page_title', $project->getTitle());
 
@@ -72,24 +95,20 @@ class ProjectController extends \PHPCI\Controller
     /**
     * Create a new pending build for a project.
     */
-    public function build($projectId)
+    public function build($projectId, $branch = '')
     {
         /* @var \PHPCI\Model\Project $project */
         $project = $this->projectStore->getById($projectId);
+
+        if (empty($branch)) {
+            $branch = $project->getBranch();
+        }
 
         if (empty($project)) {
             throw new NotFoundException('Project with id: ' . $projectId . ' not found');
         }
 
-        $build = new Build();
-        $build->setProjectId($projectId);
-        $build->setCommitId('Manual');
-        $build->setStatus(Build::STATUS_NEW);
-        $build->setBranch($project->getType() === 'hg' ? 'default' : 'master');
-        $build->setCreated(new \DateTime());
-        $build->setCommitterEmail($_SESSION['user']->getEmail());
-
-        $build = $this->buildStore->save($build);
+        $build = $this->buildService->createBuild($project, null, urldecode($branch), $_SESSION['user']->getEmail());
 
         header('Location: '.PHPCI_URL.'build/view/' . $build->getId());
         exit;
@@ -105,7 +124,7 @@ class ProjectController extends \PHPCI\Controller
         }
 
         $project = $this->projectStore->getById($projectId);
-        $this->projectStore->delete($project);
+        $this->projectService->deleteProject($project);
 
         header('Location: '.PHPCI_URL);
         exit;
@@ -114,18 +133,27 @@ class ProjectController extends \PHPCI\Controller
     /**
     * AJAX get latest builds.
     */
-    public function builds($projectId)
+    public function builds($projectId, $branch = '')
     {
-        $builds = $this->getLatestBuildsHtml($projectId);
+        $builds = $this->getLatestBuildsHtml($projectId, urldecode($branch));
         die($builds[0]);
     }
 
     /**
-    * Render latest builds for project as HTML table.
-    */
-    protected function getLatestBuildsHtml($projectId, $start = 0)
+     * Render latest builds for project as HTML table.
+     *
+     * @param $projectId
+     * @param string $branch A urldecoded branch name.
+     * @param int $start
+     * @return array
+     */
+    protected function getLatestBuildsHtml($projectId, $branch = '', $start = 0)
     {
         $criteria = array('project_id' => $projectId);
+        if (!empty($branch)) {
+            $criteria['branch'] = $branch;
+        }
+
         $order = array('id' => 'DESC');
         $builds = $this->buildStore->getWhere($criteria, 10, $start, array(), $order);
         $view = new b8\View('BuildsTable');
@@ -145,10 +173,7 @@ class ProjectController extends \PHPCI\Controller
     public function add()
     {
         $this->config->set('page_title', 'Add Project');
-
-        if (!$_SESSION['user']->getIsAdmin()) {
-            throw new ForbiddenException('You do not have permission to do that.');
-        }
+        $this->requireAdmin();
 
         $method = $this->request->getMethod();
 
@@ -159,7 +184,7 @@ class ProjectController extends \PHPCI\Controller
             $sshKey = new SshKey();
             $key = $sshKey->generate();
 
-            $values['key'] = $key['private_key'];
+            $values['key']    = $key['private_key'];
             $values['pubkey'] = $key['public_key'];
             $pub = $key['public_key'];
         }
@@ -174,29 +199,23 @@ class ProjectController extends \PHPCI\Controller
             $view->key      = $pub;
 
             return $view->render();
+        } else {
+            $title = $this->getParam('title', 'New Project');
+            $reference = $this->getParam('reference', null);
+            $type = $this->getParam('type', null);
+
+            $options = array(
+                'ssh_private_key' => $this->getParam('key', null),
+                'ssh_public_key' => $this->getParam('pubkey', null),
+                'build_config' => $this->getParam('build_config', null),
+                'allow_public_status' => $this->getParam('allow_public_status', 0),
+                'branch' => $this->getParam('branch', null),
+            );
+
+            $project = $this->projectService->createProject($title, $type, $reference, $options);
+            header('Location: '.PHPCI_URL.'project/view/' . $project->getId());
+            die;
         }
-
-        $values = $form->getValues();
-
-        $matches = array();
-        if ($values['type'] == "gitlab" && preg_match('`^(.*)@(.*):(.*)/(.*)\.git`', $values['reference'], $matches)) {
-            $info = array();
-            $info['user'] = $matches[1];
-            $info['domain'] = $matches[2];
-            $values['access_information'] = serialize($info);
-            $values['reference'] = $matches[3]."/".$matches[4];
-        }
-
-        $values['ssh_private_key']  = $values['key'];
-        $values['ssh_public_key']  = $values['pubkey'];
-
-        $project = new Project();
-        $project->setValues($values);
-
-        $project = $this->projectStore->save($project);
-
-        header('Location: '.PHPCI_URL.'project/view/' . $project->getId());
-        die;
     }
 
     /**
@@ -243,21 +262,19 @@ class ProjectController extends \PHPCI\Controller
             return $view->render();
         }
 
-        $values             = $form->getValues();
-        $values['ssh_private_key']  = $values['key'];
-        $values['ssh_public_key']  = $values['pubkey'];
+        $title = $this->getParam('title', 'New Project');
+        $reference = $this->getParam('reference', null);
+        $type = $this->getParam('type', null);
 
-        if ($values['type'] == "gitlab") {
-            preg_match('`^(.*)@(.*):(.*)/(.*)\.git`', $values['reference'], $matches);
-            $info = array();
-            $info["user"] = $matches[1];
-            $info["domain"] = $matches[2];
-            $values['access_information'] = serialize($info);
-            $values['reference'] = $matches[3] . "/" . $matches[4];
-        }
+        $options = array(
+            'ssh_private_key' => $this->getParam('key', null),
+            'ssh_public_key' => $this->getParam('pubkey', null),
+            'build_config' => $this->getParam('build_config', null),
+            'allow_public_status' => $this->getParam('allow_public_status', 0),
+            'branch' => $this->getParam('branch', null),
+        );
 
-        $project->setValues($values);
-        $project = $this->projectStore->save($project);
+        $project = $this->projectService->updateProject($project, $title, $type, $reference, $options);
 
         header('Location: '.PHPCI_URL.'project/view/' . $project->getId());
         die;
@@ -284,64 +301,51 @@ class ProjectController extends \PHPCI\Controller
             'hg'    => 'Mercurial',
             );
 
-        $field = new Form\Element\Select('type');
-        $field->setRequired(true);
+        $field = Form\Element\Select::create('type', 'Where is your project hosted?', true);
         $field->setPattern('^(github|bitbucket|gitlab|remote|local|hg)');
         $field->setOptions($options);
-        $field->setLabel('Where is your project hosted?');
-        $field->setClass('form-control');
-        $field->setContainerClass('form-group');
+        $field->setClass('form-control')->setContainerClass('form-group');
         $form->addField($field);
-
 
         $container = new Form\ControlGroup('github-container');
         $container->setClass('github-container');
 
-        $field = new Form\Element\Select('github');
-        $field->setLabel('Choose a Github repository:');
-        $field->setClass('form-control');
-        $field->setContainerClass('form-group');
+        $field = Form\Element\Select::create('github', 'Choose a Github repository:', false);
+        $field->setClass('form-control')->setContainerClass('form-group');
         $container->addField($field);
         $form->addField($container);
 
-        $field = new Form\Element\Text('reference');
-        $field->setRequired(true);
+        $field = Form\Element\Text::create('reference', 'Repository Name / URL (Remote) or Path (Local)', true);
         $field->setValidator($this->getReferenceValidator($values));
-        $field->setLabel('Repository Name / URL (Remote) or Path (Local)');
-        $field->setClass('form-control');
-        $field->setContainerClass('form-group');
+        $field->setClass('form-control')->setContainerClass('form-group');
         $form->addField($field);
 
-        $field = new Form\Element\Text('title');
-        $field->setRequired(true);
-        $field->setLabel('Project Title');
-        $field->setClass('form-control');
-        $field->setContainerClass('form-group');
+        $field = Form\Element\Text::create('title', 'Project Title', true);
+        $field->setClass('form-control')->setContainerClass('form-group');
         $form->addField($field);
 
-        $field = new Form\Element\TextArea('key');
-        $field->setRequired(false);
-        $field->setLabel('Private key to use to access repository (leave blank for local and/or anonymous remotes)');
-        $field->setClass('form-control');
-        $field->setContainerClass('form-group');
+        $title = 'Private key to use to access repository (leave blank for local and/or anonymous remotes)';
+        $field = Form\Element\TextArea::create('key', $title, false);
+        $field->setClass('form-control')->setContainerClass('form-group');
         $field->setRows(6);
         $form->addField($field);
 
-        $field = new Form\Element\TextArea('build_config');
-        $field->setRequired(false);
         $label = 'PHPCI build config for this project (if you cannot add a phpci.yml file in the project repository)';
-        $field->setLabel($label);
-        $field->setClass('form-control');
-        $field->setContainerClass('form-group');
+        $field = Form\Element\TextArea::create('build_config', $label, false);
+        $field->setClass('form-control')->setContainerClass('form-group');
         $field->setRows(6);
         $form->addField($field);
 
-        $field = new Form\Element\Checkbox('allow_public_status');
-        $field->setRequired(false);
-        $field->setLabel('Enable public status page and image for this project?');
+        $field = Form\Element\Text::create('branch', 'Default branch name', true);
+        $field->setValidator($this->getReferenceValidator($values));
+        $field->setClass('form-control')->setContainerClass('form-group')->setValue('master');
+        $form->addField($field);
+
+        $label = 'Enable public status page and image for this project?';
+        $field = Form\Element\Checkbox::create('allow_public_status', $label, false);
         $field->setContainerClass('form-group');
         $field->setCheckedValue(1);
-        $field->setValue(1);
+        $field->setValue(0);
         $form->addField($field);
 
         $field = new Form\Element\Submit();

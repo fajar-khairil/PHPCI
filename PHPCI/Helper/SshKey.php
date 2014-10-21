@@ -29,7 +29,7 @@ class SshKey
             mkdir($tempPath);
         }
 
-        $return = array();
+        $return = array('private_key' => '', 'public_key' => '');
 
         if ($this->canGenerateKeys()) {
             shell_exec('ssh-keygen -q -t rsa -b 2048 -f '.$keyFile.' -N "" -C "deploy@phpci"');
@@ -37,7 +37,13 @@ class SshKey
             $pub = file_get_contents($keyFile . '.pub');
             $prv = file_get_contents($keyFile);
 
-            $return = array('private_key' => $prv, 'public_key' => $pub);
+            if (!empty($pub)) {
+                $return['public_key'] = $pub;
+            }
+
+            if (!empty($prv)) {
+                $return['private_key'] = $prv;
+            }
         }
 
         return $return;
@@ -45,7 +51,7 @@ class SshKey
 
     public function canGenerateKeys()
     {
-        $keygen = @shell_exec('ssh-keygen');
+        $keygen = @shell_exec('ssh-keygen -h');
         $canGenerateKeys = !empty($keygen);
 
         return $canGenerateKeys;
